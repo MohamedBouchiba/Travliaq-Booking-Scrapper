@@ -1,20 +1,29 @@
-from .base import BaseScraper
+"""
+Scraper FINAL AMÉLIORÉ - Extraction précise avec bons sélecteurs
+Version corrigée pour attractions, house rules, équipements, langues
+"""
+
+from playwright.async_api import Page, Browser
+from playwright.async_api import async_playwright
+from config.settings import settings
+from datetime import datetime
+from typing import Optional, List, Dict, Any, Tuple
+import logging
+import re
+import json
+import html as html_module
+
 from src.models.hotel import (
     HotelDetailsRequest, HotelDetails, Address, ReviewScores,
     RoomOption, NearbyAttraction, HotelPolicies
 )
-from config.settings import settings
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-import logging
-import re
-import json
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class GuestReview:
-    """Modele pour un avis client."""
+    """Modèle pour un avis client."""
 
     def __init__(self, reviewer_name: str, reviewer_country: str, review_date: str,
                  positive_text: str, negative_text: str, score: float, tags: List[str] = None):
@@ -26,82 +35,94 @@ class GuestReview:
         self.score = score
         self.tags = tags or []
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "reviewer_name": self.reviewer_name,
-            "reviewer_country": self.reviewer_country,
-            "review_date": self.review_date,
-            "positive_text": self.positive_text,
-            "negative_text": self.negative_text,
-            "score": self.score,
-            "tags": self.tags
-        }
 
+class DetailsScraper:
+    """Scraper FINAL avec extraction précise."""
 
-class DetailsScraper(BaseScraper):
-    """Scraper ULTRA-CORRIGÉ - extraction précise et propre."""
+    def __init__(self):
+        self.browser: Browser = None
+        self.context = None
+        self.playwright = None
 
-    async def get_hotel_details(self, request: HotelDetailsRequest) -> tuple:
-        """Recupere TOUS les details + avis."""
-        page = await self.new_page()
+    async def __aenter__(self):
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(
+            headless=settings.headless,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--no-sandbox'
+            ]
+        )
+        self.context = await self.browser.new_context(
+            user_agent=settings.user_agent,
+            viewport={'width': 1920, 'height': 1080},
+            locale='en-US'
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.context:
+            await self.context.close()
+        if self.browser:
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
+
+    async def get_hotel_details(self, request: HotelDetailsRequest) -> Tuple[HotelDetails, List[GuestReview]]:
+        """Extraction complète avec sélecteurs précis."""
+        page = await self.context.new_page()
 
         try:
             url = self._build_hotel_url(request)
-            logger.info(f"Scraping: {url}")
-            await self.safe_goto(page, url)
-            await page.wait_for_timeout(6000)
+            logger.info(f"🔍 Scraping: {url}")
+
+            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            await page.wait_for_timeout(5000)
+
+            await self._mega_scroll(page)
 
             html_content = await page.content()
-            json_data = self._extract_json_ld(html_content)
+            json_data = self._extract_all_json_ld(html_content)
 
-            # === EXTRACTION ===
+            logger.info("📊 Extraction précise...")
+
             name = await self._extract_name(page, json_data)
-            logger.info(f"✓ Nom: {name}")
-
             address = await self._extract_address(page, html_content, json_data)
-            description = await self._extract_description(page, html_content)
+            description = await self._extract_description_full(page, html_content, json_data)
+            property_type = await self._extract_property_type(page, html_content, json_data)
+            star_rating = await self._extract_star_rating_complete(page, html_content, json_data)
 
-            # FIXÉ: property_type
-            property_type = await self._extract_property_type_ultra_fixed(page, html_content, json_data)
-            logger.info(f"✓ Type: {property_type}")
+            review_score, review_count, review_category = await self._extract_reviews(
+                page, html_content, json_data
+            )
 
-            star_rating = await self._extract_star_rating(page, html_content)
+            review_scores_detail = await self._extract_detailed_scores_guaranteed(page, html_content)
 
-            # FIXÉ: review_category
-            review_score, review_count, review_category = await self._extract_reviews_ultra_fixed(page, html_content,
-                                                                                                  json_data)
-            logger.info(f"✓ Avis: {review_score}/10 ({review_count}) - {review_category}")
+            images, main_image = await self._extract_images_decoded(page, html_content, json_data)
 
-            # FIXÉ: review_scores_detail
-            review_scores_detail = await self._extract_detailed_scores_ultra_fixed(page, html_content)
-            if review_scores_detail:
-                logger.info(f"✓ Scores OK")
+            # ÉQUIPEMENTS - extraction ciblée sur les vraies facilities
+            amenities, popular_amenities = await self._extract_amenities_targeted(page, html_content, json_data)
 
-            # Avis clients
-            guest_reviews = await self._extract_guest_reviews(page, html_content)
-            logger.info(f"✓ Avis: {len(guest_reviews)}")
-
-            # FIXÉ: Images sans apostrophes
-            images, main_image = await self._extract_images_ultra_fixed(page, html_content, json_data)
-            logger.info(f"✓ Images: {len(images)}")
-
-            # FIXÉ: Amenities propres (pas de devises/langues)
-            amenities, popular_amenities, room_amenities = await self._extract_amenities_ultra_fixed(page, html_content)
-            logger.info(f"✓ Équipements: {len(amenities)}")
-
-            rooms = await self._extract_rooms_enhanced(page, html_content)
-            logger.info(f"✓ Chambres: {len(rooms)}")
+            rooms = await self._extract_rooms_complete(page, html_content)
             cheapest_price = min([r.price for r in rooms if r.price], default=None)
 
             policies = await self._extract_policies(page, html_content)
-            house_rules = await self._extract_house_rules(page, html_content)
 
-            # FIXÉ: Attractions propres
-            nearby_attractions = await self._extract_nearby_ultra_fixed(page, html_content)
-            logger.info(f"✓ Attractions: {len(nearby_attractions)}")
+            # HOUSE RULES - ciblage précis sur .b0400e5749
+            house_rules = await self._extract_house_rules_targeted(page, html_content)
 
-            languages_spoken = await self._extract_languages(page, html_content)
-            phone, email = await self._extract_contact(html_content)
+            # ATTRACTIONS - ciblage précis sur [data-testid="poi-block-list"]
+            nearby_attractions = await self._extract_nearby_targeted(page, html_content)
+
+            # LANGUES - extraction ciblée
+            languages_spoken = await self._extract_languages_targeted(page, html_content)
+
+            phone, email = await self._extract_contact_complete(page, html_content)
+
+            guest_reviews = await self._extract_all_reviews_guaranteed(page, html_content)
+
+            logger.info(f"✅ {name} | {len(guest_reviews)} avis | {len(images)} images | {len(amenities)} équipements")
 
             result = HotelDetails(
                 hotel_id=request.hotel_id,
@@ -119,7 +140,6 @@ class DetailsScraper(BaseScraper):
                 main_image=main_image,
                 amenities=amenities,
                 popular_amenities=popular_amenities,
-                room_amenities=room_amenities,
                 rooms=rooms,
                 cheapest_price=cheapest_price,
                 policies=policies,
@@ -140,12 +160,35 @@ class DetailsScraper(BaseScraper):
             return result, guest_reviews
 
         except Exception as e:
-            logger.error(f"Erreur: {e}")
+            logger.error(f"❌ Erreur: {e}")
             import traceback
             traceback.print_exc()
             raise
         finally:
             await page.close()
+
+    async def _mega_scroll(self, page: Page):
+        """Scroll complet."""
+        try:
+            for i in range(10):
+                await page.evaluate(f"window.scrollTo(0, {i * 1200})")
+                await page.wait_for_timeout(400)
+
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(2000)
+
+            try:
+                read_all_btn = await page.query_selector('[data-testid="fr-read-all-reviews"], button:has-text("Read all reviews")')
+                if read_all_btn:
+                    await read_all_btn.click()
+                    await page.wait_for_timeout(2000)
+            except:
+                pass
+
+            await page.evaluate("window.scrollTo(0, 0)")
+            await page.wait_for_timeout(500)
+        except:
+            pass
 
     def _build_hotel_url(self, request: HotelDetailsRequest) -> str:
         base_url = f"{settings.booking_base_url}/hotel/fr/{request.hotel_id}.html"
@@ -160,173 +203,183 @@ class DetailsScraper(BaseScraper):
             params.append(f"no_rooms={request.rooms}")
         return f"{base_url}?{'&'.join(params)}" if params else base_url
 
-    def _extract_json_ld(self, html_content: str) -> dict:
+    def _extract_all_json_ld(self, html: str) -> List[dict]:
+        json_blocks = []
         try:
-            json_match = re.search(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', html_content,
-                                   re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group(1))
-            return {}
-        except:
-            return {}
-
-    async def _extract_name(self, page, json_data: dict) -> str:
-        if json_data.get('name'):
-            return json_data['name']
-
-        selectors = [
-            'h2[data-testid="property-name"]',
-            'h2.pp-header__title',
-            'h1.d2fee87262'
-        ]
-
-        for selector in selectors:
-            try:
-                elem = await page.query_selector(selector)
-                if elem:
-                    name = await elem.inner_text()
-                    if name and 3 < len(name) < 200:
-                        return name.strip()
-            except:
-                continue
-
-        return "Unknown Hotel"
-
-    async def _extract_address(self, page, html_content: str, json_data: dict) -> Optional[Address]:
-        full_address = None
-        lat, lon = None, None
-
-        if json_data.get('address'):
-            addr_obj = json_data['address']
-            if isinstance(addr_obj, dict):
-                street = addr_obj.get('streetAddress', '')
-                city = addr_obj.get('addressLocality', '')
-                postal = addr_obj.get('postalCode', '')
-                country = addr_obj.get('addressCountry', '')
-                full_address = f"{street}, {city}, {postal}, {country}".strip(', ')
-
-        if not full_address:
-            selectors = ['span[data-node_tt_id="location_score_tooltip"]', '.hp_address_subtitle']
-            for selector in selectors:
+            pattern = r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>'
+            matches = re.findall(pattern, html, re.DOTALL)
+            for match in matches:
                 try:
-                    elem = await page.query_selector(selector)
-                    if elem:
-                        addr = await elem.inner_text()
-                        if addr and len(addr) > 10:
-                            full_address = addr.strip()
-                            break
+                    json_blocks.append(json.loads(match))
                 except:
-                    continue
+                    pass
+        except:
+            pass
+        return json_blocks
 
-        if json_data.get('geo'):
-            geo = json_data['geo']
-            if isinstance(geo, dict):
-                lat = geo.get('latitude')
-                lon = geo.get('longitude')
+    async def _extract_name(self, page: Page, json_data: List[dict]) -> str:
+        for jdata in json_data:
+            if jdata.get('name') and len(str(jdata['name'])) > 3:
+                return str(jdata['name']).strip()
 
-        if not lat:
-            lat_match = re.search(r'"latitude":\s*([-\d.]+)', html_content)
-            lon_match = re.search(r'"longitude":\s*([-\d.]+)', html_content)
-            if lat_match and lon_match:
-                lat = float(lat_match.group(1))
-                lon = float(lon_match.group(1))
-
-        return Address(full_address=full_address, latitude=lat, longitude=lon) if full_address or lat else None
-
-    async def _extract_description(self, page, html_content: str) -> Optional[str]:
-        descriptions = []
-        selectors = ['#property_description_content', '[data-testid="property-description"]']
-
-        for selector in selectors:
+        selectors = ['h2[data-testid="property-name"]', 'h1[data-testid="title"]', 'h2.pp-header__title']
+        for sel in selectors:
             try:
-                elem = await page.query_selector(selector)
-                if elem:
-                    text = await elem.inner_text()
-                    if text and len(text) > 50:
-                        descriptions.append(text.strip())
-            except:
-                continue
-
-        return '\n\n'.join(descriptions) if descriptions else None
-
-    async def _extract_property_type_ultra_fixed(self, page, html_content: str, json_data: dict) -> Optional[str]:
-        """ULTRA-FIXÉ: Détecte le vrai type."""
-
-        # Méthode 1: JSON-LD @type
-        if json_data.get('@type'):
-            types_valid = ['Hotel', 'Apartment', 'Resort', 'BedAndBreakfast', 'Hostel', 'Motel', 'Lodge']
-            if json_data['@type'] in types_valid:
-                return json_data['@type']
-
-        # Méthode 2: Chercher dans les badges/labels VISIBLES
-        try:
-            # Selecteur précis pour badge de type
-            badge_selectors = [
-                '[data-testid="property-type-badge"]',
-                'span[data-testid="badge-property-type"]',
-                '.bui-badge.bui-badge--outline'
-            ]
-
-            for sel in badge_selectors:
                 elem = await page.query_selector(sel)
                 if elem:
                     text = await elem.inner_text()
-                    text = text.strip()
+                    if text and len(text) > 3:
+                        return text.strip()
+            except:
+                pass
 
-                    # FILTRER les faux positifs
-                    if text and 2 < len(text) < 30:
-                        # Rejeter les prix
-                        if '%' in text or 'off' in text.lower() or 'discount' in text.lower():
-                            continue
-                        # Rejeter les nombres
-                        if text.replace('.', '').replace(',', '').isdigit():
-                            continue
+        return "Unknown Hotel"
 
-                        # Types valides
-                        valid_types = ['hotel', 'apartment', 'resort', 'hostel', 'villa', 'bed and breakfast', 'motel',
-                                       'lodge', 'entire']
-                        if any(vt in text.lower() for vt in valid_types):
-                            return text
+    async def _extract_address(self, page: Page, html: str, json_data: List[dict]) -> Optional[Address]:
+        full_address = None
+        lat, lon = None, None
+
+        for jdata in json_data:
+            if jdata.get('address') and isinstance(jdata['address'], dict):
+                addr = jdata['address']
+                parts = [str(addr.get(k, '')) for k in ['streetAddress', 'addressLocality', 'postalCode', 'addressCountry'] if addr.get(k)]
+                if parts:
+                    full_address = ', '.join(parts)
+
+            if jdata.get('geo') and isinstance(jdata['geo'], dict):
+                lat = jdata['geo'].get('latitude')
+                lon = jdata['geo'].get('longitude')
+
+        if not lat:
+            for pattern in [r'"latitude":\s*([-\d.]+)', r'"lat":\s*([-\d.]+)']:
+                match = re.search(pattern, html)
+                if match:
+                    lat = float(match.group(1))
+                    break
+
+        if not lon:
+            for pattern in [r'"longitude":\s*([-\d.]+)', r'"lng":\s*([-\d.]+)']:
+                match = re.search(pattern, html)
+                if match:
+                    lon = float(match.group(1))
+                    break
+
+        return Address(full_address=full_address, latitude=lat, longitude=lon) if (full_address or lat) else None
+
+    async def _extract_description_full(self, page: Page, html: str, json_data: List[dict]) -> Optional[str]:
+        descriptions = []
+
+        for jdata in json_data:
+            if jdata.get('description'):
+                desc = jdata['description']
+                if isinstance(desc, str) and len(desc) > 50:
+                    descriptions.append(desc)
+
+        try:
+            desc_container = await page.query_selector('#property_description_content, [data-testid="property-description"]')
+            if desc_container:
+                full_text = await desc_container.inner_text()
+                if full_text and len(full_text) > 50:
+                    descriptions.append(full_text.strip())
         except:
             pass
 
-        # Méthode 3: Analyser le titre de la page
-        page_text = html_content[:10000].lower()
+        desc_selectors = ['.hp_desc_main_content', '[data-capla-component*="description"]']
+        for selector in desc_selectors:
+            try:
+                section = await page.query_selector(selector)
+                if section:
+                    text = await section.inner_text()
+                    if text and len(text) > 50:
+                        descriptions.append(text.strip())
+            except:
+                pass
 
-        if 'entire apartment' in page_text or 'entire flat' in page_text:
-            return "Apartment"
-        elif 'entire house' in page_text or 'entire home' in page_text:
-            return "House"
-        elif 'vacation home' in page_text:
-            return "Vacation Home"
-        elif 'hotel' in page_text[:2000]:
-            return "Hotel"
+        unique_desc = []
+        seen = set()
+        for desc in descriptions:
+            normalized = desc[:100].lower()
+            if normalized not in seen:
+                seen.add(normalized)
+                unique_desc.append(desc)
+
+        return '\n\n'.join(unique_desc) if unique_desc else None
+
+    async def _extract_property_type(self, page: Page, html: str, json_data: List[dict]) -> Optional[str]:
+        for jdata in json_data:
+            ptype = jdata.get('@type')
+            if ptype and ptype in ['Hotel', 'Apartment', 'Resort', 'BedAndBreakfast', 'Hostel']:
+                return ptype
+
+        try:
+            badge = await page.query_selector('[data-testid="property-type-badge"]')
+            if badge:
+                text = await badge.inner_text()
+                if text and len(text) < 30:
+                    return text.strip()
+        except:
+            pass
 
         return None
 
-    async def _extract_star_rating(self, page, html_content: str) -> Optional[int]:
+    async def _extract_star_rating_complete(self, page: Page, html: str, json_data: List[dict]) -> Optional[int]:
+        for jdata in json_data:
+            if jdata.get('starRating'):
+                try:
+                    rating = jdata['starRating']
+                    if isinstance(rating, dict):
+                        rating = rating.get('ratingValue')
+                    rating_int = int(float(rating))
+                    if 1 <= rating_int <= 5:
+                        return rating_int
+                except:
+                    pass
+
         try:
-            stars = await page.query_selector_all('[aria-label*="star"]')
-            if stars and 1 <= len(stars) <= 5:
+            stars = await page.query_selector_all('[aria-label*="star" i]')
+            if 1 <= len(stars) <= 5:
                 return len(stars)
         except:
             pass
+
+        try:
+            star_icons = await page.query_selector_all('.bui-star-rating__icon, svg[data-testid="star"]')
+            if 1 <= len(star_icons) <= 5:
+                return len(star_icons)
+        except:
+            pass
+
+        star_patterns = [
+            r'(\d)-star',
+            r'(\d)\s+stars?',
+            r'"starRating"[:\s]*"?(\d)"?',
+        ]
+
+        for pattern in star_patterns:
+            match = re.search(pattern, html, re.IGNORECASE)
+            if match:
+                try:
+                    stars = int(match.group(1))
+                    if 1 <= stars <= 5:
+                        return stars
+                except:
+                    pass
+
         return None
 
-    async def _extract_reviews_ultra_fixed(self, page, html_content: str, json_data: dict) -> tuple:
-        """ULTRA-FIXÉ: Score, count ET category."""
+    async def _extract_reviews(self, page: Page, html: str, json_data: List[dict]) -> Tuple[Optional[float], Optional[int], Optional[str]]:
         score, count, category = None, None, None
 
-        # Score
-        if json_data.get('aggregateRating'):
-            rating = json_data['aggregateRating']
-            if isinstance(rating, dict):
-                score = rating.get('ratingValue')
-                count = rating.get('reviewCount')
+        for jdata in json_data:
+            if jdata.get('aggregateRating'):
+                rating = jdata['aggregateRating']
+                if isinstance(rating, dict):
+                    score = rating.get('ratingValue')
+                    count = rating.get('reviewCount')
 
         if not score:
             try:
-                score_elem = await page.query_selector('.b5cd09854e.d10a6220b4, [data-testid="review-score-badge"]')
+                score_elem = await page.query_selector('[data-testid="review-score-badge"], .b5cd09854e.d10a6220b4')
                 if score_elem:
                     text = await score_elem.inner_text()
                     match = re.search(r'(\d+\.?\d*)', text)
@@ -336,95 +389,534 @@ class DetailsScraper(BaseScraper):
                 pass
 
         if not count:
-            count_match = re.search(r'(\d+)\s+(?:reviews?|avis)', html_content.lower())
-            if count_match:
-                count = int(count_match.group(1))
+            count_patterns = [
+                r'(\d[\d,]+)\s+(?:reviews?|avis)',
+                r'"reviewCount":\s*(\d+)',
+            ]
+            for pattern in count_patterns:
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    count = int(match.group(1).replace(',', ''))
+                    break
 
-        # Category - Chercher JUSTE après le score
         if score:
-            # Pattern: score puis categorie
-            cat_pattern = rf'{score}\s*(?:/10)?\s*(Excellent|Fabulous|Very good|Good|Superb|Wonderful|Scored)'
-            cat_match = re.search(cat_pattern, html_content, re.IGNORECASE)
-            if cat_match:
-                category = cat_match.group(1)
-
-        # Fallback
-        if not category:
-            try:
-                cat_elem = await page.query_selector('.b5cd09854e.c90c0a70d3.db63693c62')
-                if cat_elem:
-                    text = await cat_elem.inner_text()
-                    for cat in ['Excellent', 'Fabulous', 'Very good', 'Good', 'Superb', 'Wonderful']:
-                        if cat in text:
-                            category = cat
-                            break
-            except:
-                pass
+            categories = ['Exceptional', 'Wonderful', 'Excellent', 'Very good', 'Fabulous', 'Superb', 'Good']
+            for cat in categories:
+                if re.search(rf'{re.escape(str(score))}[^a-zA-Z]*{cat}', html, re.IGNORECASE):
+                    category = cat
+                    break
 
         return score, count, category
 
-    async def _extract_detailed_scores_ultra_fixed(self, page, html_content: str) -> Optional[ReviewScores]:
-        """ULTRA-FIXÉ: Extraction précise des 7 scores."""
+    async def _extract_detailed_scores_guaranteed(self, page: Page, html: str) -> Optional[ReviewScores]:
         scores = {}
 
-        await page.wait_for_timeout(1000)
-
-        # Méthode directe: Parser la section review_scores
-        # Pattern: "Cleanliness</span><span ...>9.0</span>"
-        categories_map = {
-            'Staff': 'staff',
-            'Personnel': 'staff',
-            'Facilities': 'facilities',
-            'Équipements': 'facilities',
-            'Cleanliness': 'cleanliness',
-            'Propreté': 'cleanliness',
-            'Comfort': 'comfort',
-            'Confort': 'comfort',
-            'Value for money': 'value_for_money',
-            'Rapport qualité': 'value_for_money',
-            'Location': 'location',
-            'Emplacement': 'location',
-            'Free WiFi': 'wifi',
-            'WiFi': 'wifi'
+        categories = {
+            'staff': ['Staff', 'Personnel'],
+            'facilities': ['Facilities', 'Équipements', 'Equipements'],
+            'cleanliness': ['Cleanliness', 'Propreté', 'Proprete'],
+            'comfort': ['Comfort', 'Confort'],
+            'value_for_money': ['Value for money', 'Rapport qualité', 'Value'],
+            'location': ['Location', 'Emplacement'],
+            'wifi': ['WiFi', 'Wi-Fi', 'Free WiFi', 'Free Wifi']
         }
 
-        for label, field in categories_map.items():
+        try:
+            subscore_items = await page.query_selector_all('[data-testid="review-subscore"]')
+
+            for item in subscore_items:
+                text = await item.inner_text()
+
+                for field, labels in categories.items():
+                    if field in scores:
+                        continue
+
+                    for label in labels:
+                        if label in text:
+                            score_match = re.search(r'\b(\d+\.?\d*)\b', text)
+                            if score_match:
+                                value = float(score_match.group(1))
+                                if 0 <= value <= 10:
+                                    scores[field] = value
+                                    break
+        except:
+            pass
+
+        for field, labels in categories.items():
             if field in scores:
                 continue
 
-            # Pattern précis: label suivi d'un score entre 0-10
-            pattern = rf'{re.escape(label)}[^<>]*?(\d+\.?\d*)\s*(?:/10)?'
-            match = re.search(pattern, html_content, re.IGNORECASE)
+            for label in labels:
+                pattern = rf'{re.escape(label)}[^\d]*?(\d+\.?\d*)'
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    try:
+                        value = float(match.group(1))
+                        if 0 <= value <= 10:
+                            scores[field] = value
+                            break
+                    except:
+                        pass
 
-            if match:
-                try:
-                    value = float(match.group(1))
-                    # Valider que c'est un score (0-10)
-                    if 0 <= value <= 10:
-                        scores[field] = value
-                except:
-                    pass
+        logger.info(f"📊 Scores détaillés: {len(scores)} catégories")
 
         return ReviewScores(**scores) if scores else None
 
-    async def _extract_guest_reviews(self, page, html_content: str) -> List[GuestReview]:
-        """Extrait les avis (peut être 0 si pas sur la page)."""
+    async def _extract_images_decoded(self, page: Page, html: str, json_data: List[dict]) -> Tuple[List[str], Optional[str]]:
+        images_set = set()
+        main_image = None
+
+        img_pattern = r'(https://cf\.bstatic\.com/xdata/images/hotel/[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)\?[^\s"\'<>]+)'
+
+        all_urls = re.findall(img_pattern, html)
+
+        seen_ids = set()
+
+        for url in all_urls:
+            url = html_module.unescape(url)
+
+            id_match = re.search(r'/(\d+)\.(?:jpg|jpeg|png|webp)', url)
+            if not id_match:
+                continue
+
+            img_id = id_match.group(1)
+
+            if img_id in seen_ids:
+                continue
+
+            if 'k=' in url and 'o=' in url:
+                seen_ids.add(img_id)
+
+                url = re.sub(r'/square\d+/', '/max1024x768/', url)
+                url = re.sub(r'/max\d+/', '/max1024x768/', url)
+
+                images_set.add(url)
+
+                if not main_image:
+                    main_image = url
+
+        images = list(images_set)
+
+        logger.info(f"📸 {len(images)} images")
+
+        return images[:50], main_image
+
+    async def _extract_amenities_targeted(self, page: Page, html: str, json_data: List[dict]) -> Tuple[List[str], List[str]]:
+        """ÉQUIPEMENTS - Extraction ciblée précise."""
+        amenities = set()
+        popular = []
+
+        # JSON-LD
+        for jdata in json_data:
+            if jdata.get('amenityFeature'):
+                features = jdata['amenityFeature']
+                if isinstance(features, list):
+                    for feat in features:
+                        if isinstance(feat, dict) and feat.get('name'):
+                            name = feat['name']
+                            if 3 < len(name) < 60:
+                                amenities.add(name)
+
+        # Cibler spécifiquement la section facilities VISIBLE
+        try:
+            # Section "Most popular facilities"
+            popular_section = await page.query_selector('[data-testid="property-most-popular-facilities"], .hp_desc_main_content')
+
+            if popular_section:
+                items = await popular_section.query_selector_all('.bui-list__item, li, span[class*="facility"]')
+
+                for item in items[:100]:
+                    text = await item.inner_text()
+                    text = text.strip()
+
+                    if 3 < len(text) < 60 and text[0].isupper():
+                        # Validation stricte
+                        if not any(kw in text.lower() for kw in ['skip', 'sign', 'register', 'booking', 'overview', 'price', 'select', 'genius']):
+                            amenities.add(text)
+                            if len(popular) < 15:
+                                popular.append(text)
+        except:
+            pass
+
+        # Équipements communs contextuels
+        common_facilities = [
+            'Free WiFi', 'WiFi', 'Parking', 'Free parking', 'Restaurant', 'Bar',
+            'Room service', 'Fitness center', 'Spa', 'Swimming pool', 'Pool',
+            'Air conditioning', 'Heating', 'Non-smoking rooms', 'Family rooms',
+            'Airport shuttle', '24-hour front desk', 'Elevator', 'Terrace', 'Garden',
+            'Kitchen', 'Washing machine', 'Iron', 'Safe', 'Soundproof',
+            'Hot tub', 'Sauna', 'Coffee machine', 'Mini-bar', 'Flat-screen TV',
+            'Balcony', 'Private bathroom', 'Hairdryer', 'Bathtub', 'Shower'
+        ]
+
+        search_zone = html[:50000]
+        for facility in common_facilities:
+            if facility.lower() in search_zone.lower():
+                amenities.add(facility)
+
+        cleaned = sorted(list(amenities))
+
+        logger.info(f"🔧 {len(cleaned)} équipements")
+
+        return cleaned, popular[:15]
+
+    async def _extract_rooms_complete(self, page: Page, html: str) -> List[RoomOption]:
+        rooms = []
+
+        try:
+            await page.wait_for_selector('tr[data-room-id], .hprt-table tr', timeout=5000)
+        except:
+            pass
+
+        room_rows = await page.query_selector_all('tr[data-room-id], tr.js-rt-block-row')
+
+        for row in room_rows[:30]:
+            try:
+                text = await row.inner_text()
+
+                room_type = "Unknown Room"
+                try:
+                    name_elem = await row.query_selector('.hprt-roomtype-link, [data-testid="room-name"]')
+                    if name_elem:
+                        room_type = (await name_elem.inner_text()).strip()
+                except:
+                    pass
+
+                price = None
+                try:
+                    price_elem = await row.query_selector('.bui-price-display__value, [data-testid="price"]')
+                    if price_elem:
+                        price_text = await price_elem.inner_text()
+                        price = self._parse_price(price_text)
+                except:
+                    pass
+
+                if not price:
+                    price_matches = re.findall(r'[€$£]\s*(\d[\d,]*)', text)
+                    if price_matches:
+                        price = float(price_matches[0].replace(',', ''))
+
+                capacity = None
+                cap_patterns = [
+                    r'(\d+)\s+(?:adults?|guests?|persons?)',
+                    r'Sleeps\s+(\d+)',
+                    r'Max\s+(\d+)',
+                    r'x\s+(\d+)'
+                ]
+
+                for pattern in cap_patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        capacity = int(match.group(1))
+                        break
+
+                if not capacity and 'solo' in room_type.lower():
+                    capacity = 1
+                elif not capacity and 'double' in room_type.lower():
+                    capacity = 2
+
+                room_size = None
+                size_match = re.search(r'(\d+)\s*m[²2]', text)
+                if size_match:
+                    room_size = f"{size_match.group(1)} m²"
+
+                bed_type = None
+                bed_keywords = {
+                    'King bed': ['king bed'],
+                    'Queen bed': ['queen bed'],
+                    'Full bed': ['full bed', 'double bed'],
+                    'Twin beds': ['twin beds', '2 single beds'],
+                    'Sofa bed': ['sofa bed']
+                }
+
+                text_lower = text.lower()
+                for bed, keywords in bed_keywords.items():
+                    if any(kw in text_lower for kw in keywords):
+                        bed_type = bed
+                        break
+
+                amenities = []
+                for kw in ['WiFi', 'TV', 'Kitchen', 'Bathroom', 'View', 'Air conditioning', 'Heating', 'Balcony', 'Bath', 'Shower']:
+                    if kw.lower() in text_lower:
+                        amenities.append(kw)
+
+                cancellation = None
+                refundable = False
+
+                if 'free cancellation' in text_lower:
+                    cancellation = "Free cancellation"
+                    refundable = True
+                elif 'non-refundable' in text_lower or 'non refundable' in text_lower:
+                    cancellation = "Non-refundable"
+
+                breakfast = ('breakfast' in text_lower) and ('included' in text_lower)
+
+                room = RoomOption(
+                    room_type=room_type,
+                    price=price,
+                    capacity=capacity,
+                    bed_type=bed_type,
+                    room_size=room_size,
+                    amenities=amenities,
+                    cancellation_policy=cancellation,
+                    breakfast_included=breakfast,
+                    refundable=refundable
+                )
+
+                rooms.append(room)
+
+            except:
+                continue
+
+        return rooms
+
+    def _parse_price(self, price_text: str) -> Optional[float]:
+        try:
+            cleaned = re.sub(r'[^\d.,]', '', price_text)
+            cleaned = cleaned.replace(',', '')
+            match = re.search(r'(\d+(?:\.\d+)?)', cleaned)
+            if match:
+                return float(match.group(1))
+        except:
+            pass
+        return None
+
+    async def _extract_policies(self, page: Page, html: str) -> Optional[HotelPolicies]:
+        policies = {}
+
+        checkin_match = re.search(r'Check-in.*?(\d{1,2}:\d{2})', html, re.IGNORECASE)
+        if checkin_match:
+            policies['checkin_from'] = checkin_match.group(1)
+
+        checkout_match = re.search(r'Check-out.*?(\d{1,2}:\d{2})', html, re.IGNORECASE)
+        if checkout_match:
+            policies['checkout_until'] = checkout_match.group(1)
+
+        return HotelPolicies(**policies) if policies else None
+
+    async def _extract_house_rules_targeted(self, page: Page, html: str) -> List[str]:
+        """HOUSE RULES - Ciblage précis sur .b0400e5749."""
+        rules = []
+
+        try:
+            # Cibler spécifiquement les blocs de règles
+            rule_blocks = await page.query_selector_all('.b0400e5749')
+
+            for block in rule_blocks:
+                # Titre de la règle
+                try:
+                    title_elem = await block.query_selector('.e7addce19e')
+                    if title_elem:
+                        title = (await title_elem.inner_text()).strip()
+
+                        # Contenu de la règle
+                        content_elem = await block.query_selector('.c92998be48, .da7e3382bac')
+                        if content_elem:
+                            content = (await content_elem.inner_text()).strip()
+
+                            # Combiner titre + contenu
+                            if title and content:
+                                full_rule = f"{title}: {content}"
+                                if len(full_rule) > 10 and len(full_rule) < 300:
+                                    rules.append(full_rule)
+                except:
+                    continue
+        except:
+            pass
+
+        logger.info(f"📋 {len(rules)} règles")
+
+        return rules[:30]
+
+    async def _extract_nearby_targeted(self, page: Page, html: str) -> List[NearbyAttraction]:
+        """ATTRACTIONS - Ciblage précis sur [data-testid="poi-block-list"]."""
+        attractions = []
+        seen = set()
+
+        try:
+            # Cibler les listes POI
+            poi_lists = await page.query_selector_all('[data-testid="poi-block-list"]')
+
+            for poi_list in poi_lists:
+                # Trouver la catégorie
+                try:
+                    parent_block = await poi_list.query_selector('xpath=ancestor::div[@data-testid="poi-block"]')
+                    if not parent_block:
+                        parent_block = await poi_list.query_selector('xpath=ancestor::div[2]')
+
+                    category = "Attraction"
+                    if parent_block:
+                        try:
+                            category_elem = await parent_block.query_selector('h3 div')
+                            if category_elem:
+                                category_text = (await category_elem.inner_text()).strip()
+
+                                # Mapper les catégories
+                                if 'restaurant' in category_text.lower() or 'cafe' in category_text.lower():
+                                    category = "Restaurant"
+                                elif 'transit' in category_text.lower() or 'transport' in category_text.lower():
+                                    category = "Public transport"
+                                elif 'airport' in category_text.lower():
+                                    category = "Airport"
+                                elif 'natural' in category_text.lower():
+                                    category = "Park"
+                                elif 'attraction' in category_text.lower():
+                                    category = "Attraction"
+                                else:
+                                    category = category_text
+                        except:
+                            pass
+
+                    # Extraire chaque item
+                    items = await poi_list.query_selector_all('li')
+
+                    for item in items:
+                        try:
+                            # Nom de l'attraction
+                            name_elem = await item.query_selector('.d1bc97eb82, .aa225776f2')
+                            if not name_elem:
+                                continue
+
+                            name_text = await name_elem.inner_text()
+                            name = name_text.strip()
+
+                            # Distance
+                            distance_elem = await item.query_selector('.a0a56631d6, .b99b6ef58f')
+                            distance = "Unknown"
+                            if distance_elem:
+                                distance = (await distance_elem.inner_text()).strip()
+
+                            # Validation
+                            if len(name) > 2 and name not in seen:
+                                seen.add(name)
+                                attractions.append(NearbyAttraction(
+                                    name=name,
+                                    distance=distance,
+                                    category=category
+                                ))
+                        except:
+                            continue
+                except:
+                    continue
+        except:
+            pass
+
+        logger.info(f"🗺️  {len(attractions)} attractions")
+
+        return attractions[:100]
+
+    async def _extract_languages_targeted(self, page: Page, html: str) -> List[str]:
+        """LANGUES - Extraction ciblée."""
+        languages = []
+
+        try:
+            # Chercher section languages
+            lang_patterns = [
+                r'Languages?\s+spoken[:\s]+([A-Za-zÀ-ÿ,\s•·]+)',
+                r'Langues?\s+parlées[:\s]+([A-Za-zÀ-ÿ,\s•·]+)',
+            ]
+
+            for pattern in lang_patterns:
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    text = match.group(1)
+                    langs = re.split(r'[,•·\n]', text)
+
+                    for lang in langs[:15]:
+                        lang = lang.strip()
+                        if 2 < len(lang) < 30 and lang[0].isupper():
+                            if not any(kw in lang.lower() for kw in ['hotel', 'overview', 'skip', 'booking']):
+                                languages.append(lang)
+                    break
+        except:
+            pass
+
+        logger.info(f"🗣️  {len(languages)} langues")
+
+        return languages[:15]
+
+    async def _extract_contact_complete(self, page: Page, html: str) -> Tuple[Optional[str], Optional[str]]:
+        phone = None
+        email = None
+
+        phone_patterns = [
+            r'tel:\s*([+\d\s()-]{8,20})',
+            r'Phone:?\s*([+\d\s()-]{8,20})',
+        ]
+
+        for pattern in phone_patterns:
+            match = re.search(pattern, html)
+            if match:
+                phone = match.group(1).strip()
+                break
+
+        email_pattern = r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
+        email_match = re.search(email_pattern, html)
+        if email_match:
+            email_candidate = email_match.group(1)
+            if not any(x in email_candidate.lower() for x in ['png', 'jpg', 'gif', 'svg']):
+                email = email_candidate
+
+        return phone, email
+
+    async def _extract_all_reviews_guaranteed(self, page: Page, html: str) -> List[GuestReview]:
         reviews = []
 
         try:
-            try:
-                reviews_section = await page.query_selector('#review_list_page_container')
-                if reviews_section:
-                    await reviews_section.scroll_into_view_if_needed()
-                    await page.wait_for_timeout(2000)
-            except:
-                pass
+            featured_items = await page.query_selector_all('[data-testid="featuredreview"]')
 
-            review_items = await page.query_selector_all('.review_list_new_item_block, [data-testid="review-card"]')
+            logger.info(f"💬 {len(featured_items)} featured reviews")
 
-            for item in review_items[:15]:
+            for item in featured_items[:15]:
                 try:
-                    full_text = await item.inner_text()
+                    name = "Anonymous"
+                    try:
+                        name_elem = await item.query_selector('.b08850ce41.f546354b44')
+                        if name_elem:
+                            name = (await name_elem.inner_text()).strip()
+                    except:
+                        pass
+
+                    country = "Unknown"
+                    try:
+                        country_elem = await item.query_selector('.d838fb5f41.aea5eccb71')
+                        if country_elem:
+                            country = (await country_elem.inner_text()).strip()
+                    except:
+                        pass
+
+                    text = ""
+                    try:
+                        text_elem = await item.query_selector('[data-testid="featuredreview-text"] .b99b6ef58f')
+                        if text_elem:
+                            text = (await text_elem.inner_text()).strip()
+                            text = text.replace('"', '').strip()
+                    except:
+                        pass
+
+                    if name and text:
+                        review = GuestReview(
+                            reviewer_name=name,
+                            reviewer_country=country,
+                            review_date="Recent",
+                            positive_text=text,
+                            negative_text="",
+                            score=0.0,
+                            tags=[]
+                        )
+                        reviews.append(review)
+
+                except:
+                    continue
+        except:
+            pass
+
+        try:
+            full_reviews = await page.query_selector_all('.review_list_new_item_block, [data-testid="review-card"]')
+
+            for item in full_reviews[:15]:
+                try:
+                    text = await item.inner_text()
 
                     name = "Anonymous"
                     try:
@@ -442,12 +934,12 @@ class DetailsScraper(BaseScraper):
                     except:
                         pass
 
-                    date = None
-                    date_match = re.search(r'(\d{1,2}\s+[A-Za-z]+\s+\d{4})', full_text)
+                    date = "Unknown"
+                    date_match = re.search(r'(\d{1,2}\s+[A-Za-z]+\s+\d{4})', text)
                     if date_match:
                         date = date_match.group(1)
 
-                    score = None
+                    score = 0.0
                     try:
                         score_elem = await item.query_selector('.bui-review-score__badge')
                         if score_elem:
@@ -459,6 +951,8 @@ class DetailsScraper(BaseScraper):
                         pass
 
                     positive = ""
+                    negative = ""
+
                     try:
                         pos_elem = await item.query_selector('.review_pos')
                         if pos_elem:
@@ -466,7 +960,6 @@ class DetailsScraper(BaseScraper):
                     except:
                         pass
 
-                    negative = ""
                     try:
                         neg_elem = await item.query_selector('.review_neg')
                         if neg_elem:
@@ -478,463 +971,19 @@ class DetailsScraper(BaseScraper):
                         review = GuestReview(
                             reviewer_name=name,
                             reviewer_country=country,
-                            review_date=date or "Unknown",
+                            review_date=date,
                             positive_text=positive,
                             negative_text=negative,
-                            score=score or 0.0,
+                            score=score,
                             tags=[]
                         )
                         reviews.append(review)
 
                 except:
                     continue
-
-            return reviews[:15]
-
-        except:
-            return []
-
-    async def _extract_images_ultra_fixed(self, page, html_content: str, json_data: dict) -> tuple:
-        """ULTRA-FIXÉ: Images propres sans apostrophes."""
-        images = set()
-        main_image = None
-
-        # JSON-LD
-        if json_data.get('image'):
-            img_data = json_data['image']
-            if isinstance(img_data, list):
-                for img in img_data[:30]:
-                    if isinstance(img, str):
-                        images.add(img.rstrip("'\""))
-                    elif isinstance(img, dict) and img.get('url'):
-                        images.add(img['url'].rstrip("'\""))
-            elif isinstance(img_data, str):
-                images.add(img_data.rstrip("'\""))
-                main_image = img_data.rstrip("'\"")
-
-        # Selecteurs
-        img_selectors = [
-            'img[data-testid="property-gallery-image"]',
-            '.bh-photo-grid-item img',
-            '[data-component="photo-grid"] img'
-        ]
-
-        for selector in img_selectors:
-            try:
-                imgs = await page.query_selector_all(selector)
-                for img in imgs[:40]:
-                    src = await img.get_attribute('src')
-                    if not src:
-                        src = await img.get_attribute('data-src')
-
-                    if src and 'bstatic.com' in src:
-                        # Nettoyer
-                        src = src.rstrip("'\"")
-                        images.add(src)
-                        if not main_image:
-                            main_image = src
-            except:
-                continue
-
-        # Regex PROPRE (sans quotes/apostrophes)
-        img_pattern = r'(https://cf\.bstatic\.com/xdata/images/hotel/[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s"\'<>]*)?)'
-        img_urls = re.findall(img_pattern, html_content)
-
-        for url in img_urls[:50]:
-            if '/images/hotel/' in url:
-                url = url.rstrip("',\"")
-                if 'max1024x768' not in url and 'max1280x900' not in url:
-                    url = re.sub(r'/max\d+x?\d*/', '/max1024x768/', url)
-                    url = re.sub(r'/square\d+/', '/max1024x768/', url)
-                images.add(url)
-
-        # Dédupliquer
-        final_images = []
-        seen_base = set()
-
-        for img in images:
-            base_match = re.search(r'/(\d+)\.(?:jpg|jpeg|png)', img)
-            if base_match:
-                base_id = base_match.group(1)
-                if base_id not in seen_base:
-                    seen_base.add(base_id)
-                    final_images.append(img)
-            else:
-                final_images.append(img)
-
-        return final_images, main_image
-
-    async def _extract_amenities_ultra_fixed(self, page, html_content: str) -> tuple:
-        """ULTRA-FIXÉ: Équipements propres SANS devises/langues/mois."""
-        amenities = set()
-        popular = []
-
-        # Méthode 1: Sélecteurs VISUELS uniquement
-        try:
-            # Section "Most popular facilities"
-            popular_section = await page.query_selector('div:has-text("Most popular facilities")')
-            if popular_section:
-                parent = await popular_section.query_selector('xpath=..')
-                if parent:
-                    items = await parent.query_selector_all('div, span')
-                    for item in items[:15]:
-                        text = await item.inner_text()
-                        text = text.strip()
-                        if text and 3 < len(text) < 50 and '\n' not in text:
-                            if self._is_real_amenity(text):
-                                popular.append(text)
-                                amenities.add(text)
         except:
             pass
 
-        # Méthode 2: Section "Facilities"
-        try:
-            facilities_items = await page.query_selector_all(
-                '.facilitiesChecklistSection li, .hotel_facilities__list li')
-            for item in facilities_items:
-                text = await item.inner_text()
-                text = text.strip()
-                if text and 3 < len(text) < 80:
-                    if self._is_real_amenity(text):
-                        amenities.add(text)
-        except:
-            pass
+        logger.info(f"✅ {len(reviews)} avis total")
 
-        # Méthode 3: Keywords communs (TRÈS SÉLECTIF)
-        common_amenities = [
-            'Free WiFi', 'Free Wi-Fi', 'Parking', 'Free parking', 'Restaurant', 'Bar',
-            'Room service', 'Fitness center', 'Fitness centre', 'Gym', 'Spa',
-            'Swimming pool', 'Pool', 'Air conditioning', 'Heating',
-            'Non-smoking rooms', 'Family rooms', 'Pet-friendly', 'Pets allowed',
-            'Airport shuttle', '24-hour front desk', 'Reception', 'Concierge',
-            'Elevator', 'Lift', 'Terrace', 'Garden', 'Balcony',
-            'Kitchen', 'Kitchenette', 'Coffee machine', 'Electric kettle',
-            'Washing machine', 'Dryer', 'Iron', 'Ironing facilities',
-            'Safe', 'Soundproof', 'Wheelchair accessible'
-        ]
-
-        # Chercher UNIQUEMENT dans les 20000 premiers caractères (zone de description)
-        search_zone = html_content[:20000].lower()
-
-        for amenity in common_amenities:
-            if amenity.lower() in search_zone:
-                amenities.add(amenity)
-
-        # Filtrer et nettoyer
-        amenities_cleaned = [a for a in amenities if self._is_real_amenity(a)]
-
-        logger.debug(f"Équipements finaux: {len(amenities_cleaned)}")
-        return amenities_cleaned, popular, []
-
-    def _is_real_amenity(self, text: str) -> bool:
-        """Validation STRICTE pour équipements."""
-        if not text or len(text) < 3 or len(text) > 80:
-            return False
-
-        # Liste NOIRE extensive
-        blacklist_keywords = [
-            # Devises
-            'dollar', 'euro', 'pound', 'franc', 'peso', 'yen', 'yuan', 'rupee', 'riyal', 'dirham',
-            'krona', 'krone', 'zloty', 'forint', 'leu', 'dinar', 'shekel', 'baht', 'ringgit',
-            'won', 'currency', 'koruna',
-            # Langues
-            'english', 'français', 'español', 'deutsch', 'italiano', 'português', 'svenska',
-            'dansk', 'norsk', 'suomi', 'polski', 'magyar', 'čeština', 'slovenčina',
-            'hrvatski', 'srpski', 'român', 'bahasa', 'tiếng', 'việt',
-            # Jours/Mois
-            'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
-            'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
-            'september', 'october', 'november', 'december',
-            'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche',
-            # Autres
-            'genius', 'booking', 'hotel_', 'offline', 'openid', 'profile', 'email', 'phone',
-            'address', 'unknown', 'sofort', 'paypal', 'qiwi', 'webmoney', 'alipay', 'wechat',
-            'ideal', 'giropay', 'bancontact', 'tenpay', 'yandex',
-            # Types de propriété
-            'hotels', 'apartment', 'studio', 'suite', 'room', 'dorm', 'vacation home',
-            'bungalow', 'villa', 'chalet', 'tent', 'trailer',
-            # Modes de transport
-            'gondola', 'chairlift', 'cablecar', 'funicular', 't-bar', 'j-bar', 'drag lift',
-            # Divers
-            'check-in', 'checkin', 'checkout', 'breakfast', 'dinner', 'meals', 'luggage',
-            'select', 'upgrade', 'name', 'genius', 'loud', 'quiet', 'heat', 'cold', 'noise',
-            'clean', 'comfort', 'location', 'value', 'staff', 'entire', 'tower', 'window',
-            'total', 'business', 'economy', 'premium', 'first class'
-        ]
-
-        text_lower = text.lower()
-
-        # Rejeter si contient un keyword de la blacklist
-        for keyword in blacklist_keywords:
-            if keyword in text_lower:
-                return False
-
-        # Rejeter si c'est un pays ou une région
-        countries = ['france', 'paris', 'ile de france', 'georgia', 'abkhazia']
-        if any(c in text_lower for c in countries):
-            return False
-
-        # Rejeter si commence par minuscule ou nombre
-        if text[0].islower() or text[0].isdigit():
-            return False
-
-        # Rejeter si contient des caractères invalides
-        if any(c in text for c in ['<', '>', '{', '}', '"', 'http', '.com', 'meter)']):
-            return False
-
-        return True
-
-    async def _extract_rooms_enhanced(self, page, html_content: str) -> List[RoomOption]:
-        rooms = []
-        await page.wait_for_timeout(2000)
-
-        try:
-            room_rows = await page.query_selector_all('tr.js-rt-block-row, tr[data-room-id]')
-
-            for row in room_rows[:20]:
-                full_text = await row.inner_text()
-
-                room_type = "Unknown Room"
-                try:
-                    name_elem = await row.query_selector('.hprt-roomtype-link')
-                    if name_elem:
-                        room_type = (await name_elem.inner_text()).strip()
-                except:
-                    pass
-
-                if room_type == "Unknown Room":
-                    for line in full_text.split('\n'):
-                        if any(kw in line for kw in ['Bedroom', 'Room', 'Suite', 'Apartment']):
-                            room_type = line.strip()
-                            break
-
-                price = None
-                try:
-                    price_elem = await row.query_selector('.bui-price-display__value')
-                    if price_elem:
-                        price_text = await price_elem.inner_text()
-                        price = self._parse_price(price_text)
-                except:
-                    pass
-
-                if not price:
-                    price_matches = re.findall(r'€\s*(\d+)', full_text)
-                    if price_matches:
-                        price = float(price_matches[0])
-
-                capacity = None
-                cap_match = re.search(r'(\d+)\s*(?:guest|adult)', full_text.lower())
-                if cap_match:
-                    capacity = int(cap_match.group(1))
-
-                room_size = None
-                size_match = re.search(r'(\d+)\s*m[²2]', full_text)
-                if size_match:
-                    room_size = f"{size_match.group(1)} m²"
-
-                bed_type = None
-                if 'full bed' in full_text.lower():
-                    bed_type = "Full bed"
-                elif 'sofa bed' in full_text.lower():
-                    bed_type = "Sofa bed"
-
-                amenities = []
-                for kw in ['WiFi', 'TV', 'Kitchen', 'Bathroom', 'View', 'Air conditioning']:
-                    if kw.lower() in full_text.lower():
-                        amenities.append(kw)
-
-                cancellation = None
-                refundable = False
-                if 'free cancellation' in full_text.lower():
-                    cancellation = "Free cancellation"
-                    refundable = True
-                elif 'non-refundable' in full_text.lower():
-                    cancellation = "Non-refundable"
-
-                breakfast = 'breakfast' in full_text.lower() and 'included' in full_text.lower()
-
-                room = RoomOption(
-                    room_type=room_type,
-                    price=price,
-                    capacity=capacity,
-                    bed_type=bed_type,
-                    room_size=room_size,
-                    amenities=amenities,
-                    cancellation_policy=cancellation,
-                    breakfast_included=breakfast,
-                    refundable=refundable
-                )
-
-                rooms.append(room)
-        except Exception as e:
-            logger.warning(f"Erreur rooms: {e}")
-
-        return rooms
-
-    def _parse_price(self, price_text: str) -> Optional[float]:
-        try:
-            cleaned = price_text.replace('€', '').replace('EUR', '').replace(',', '').strip()
-            match = re.search(r'(\d+)', cleaned)
-            return float(match.group(1)) if match else None
-        except:
-            return None
-
-    async def _extract_policies(self, page, html_content: str) -> Optional[HotelPolicies]:
-        policies = {}
-
-        checkin_match = re.search(r'Check-in.*?(\d{1,2}:\d{2})', html_content, re.IGNORECASE)
-        if checkin_match:
-            policies['checkin_from'] = checkin_match.group(1)
-
-        checkout_match = re.search(r'Check-out.*?(\d{1,2}:\d{2})', html_content, re.IGNORECASE)
-        if checkout_match:
-            policies['checkout_until'] = checkout_match.group(1)
-
-        return HotelPolicies(**policies) if policies else None
-
-    async def _extract_house_rules(self, page, html_content: str) -> List[str]:
-        rules = []
-
-        try:
-            items = await page.query_selector_all('.hotel-rules__item')
-            for item in items[:20]:
-                text = await item.inner_text()
-                text = text.strip()
-                if text and 5 < len(text) < 200:
-                    rules.append(text)
-        except:
-            pass
-
-        return rules
-
-    async def _extract_nearby_ultra_fixed(self, page, html_content: str) -> List[NearbyAttraction]:
-        """ULTRA-FIXÉ: Attractions propres et réelles."""
-        attractions = []
-
-        try:
-            # Méthode 1: Section "Area info" VISIBLE
-            area_section = await page.query_selector('div:has-text("Area info"), div:has-text("What\'s nearby")')
-            if area_section:
-                parent = await area_section.query_selector('xpath=../..')
-                if parent:
-                    items = await parent.query_selector_all('tr, li')
-
-                    for item in items[:50]:
-                        text = await item.inner_text()
-                        text = text.strip()
-
-                        # Format: "Nom Distance"
-                        match = re.match(r'^([A-Z][A-Za-z\s\-\'À-ÿ]{2,60}?)\s+([\d.,]+\s*(?:km|m))$', text)
-                        if match:
-                            name = match.group(1).strip()
-                            distance = match.group(2).strip()
-
-                            if self._is_valid_attraction(name):
-                                category = self._categorize_attraction(name)
-                                attractions.append(NearbyAttraction(
-                                    name=name,
-                                    distance=distance,
-                                    category=category
-                                ))
-        except:
-            pass
-
-        # Méthode 2: Fallback - Chercher patterns spécifiques
-        if len(attractions) < 3:
-            patterns = [
-                r'([A-Z][A-Za-z\s\-\']+(?:Museum|Station|Airport|Center|Centre|Tower|Park|Garden|Cathedral|Palace|Theatre|Opera|Gallery))\s+([\d.,]+\s*(?:km|m))',
-                r'(Louvre|Eiffel Tower|Notre[ -]Dame|Arc de Triomphe|Sacré[ -]Cœur|Pantheon|Versailles)\s+([\d.,]+\s*(?:km|m))'
-            ]
-
-            for pattern in patterns:
-                matches = re.findall(pattern, html_content[:30000])
-                for name, distance in matches[:20]:
-                    name = name.strip()
-                    if self._is_valid_attraction(name) and name not in [a.name for a in attractions]:
-                        category = self._categorize_attraction(name)
-                        attractions.append(NearbyAttraction(
-                            name=name,
-                            distance=distance.strip(),
-                            category=category
-                        ))
-
-        logger.debug(f"Attractions: {len(attractions)}")
-        return attractions
-
-    def _is_valid_attraction(self, name: str) -> bool:
-        """Validation stricte des noms d'attractions."""
-        if not name or len(name) < 3 or len(name) > 80:
-            return False
-
-        blacklist = [
-            'located in', 'prime location', 'extra long', 'select up to',
-            'great choice', 'no account', 'it only takes', 'we have more',
-            'golf course (within', 'hello', 'output', 'property', '<b>', '</b>',
-            'best of', 'subtitle', 'item"', 'the parkings', 'center, the apartment'
-        ]
-
-        name_lower = name.lower()
-        for keyword in blacklist:
-            if keyword in name_lower:
-                return False
-
-        # Doit commencer par majuscule
-        if not name[0].isupper():
-            return False
-
-        # Pas trop de mots (max 6)
-        if len(name.split()) > 6:
-            return False
-
-        return True
-
-    def _categorize_attraction(self, name: str) -> str:
-        name_lower = name.lower()
-
-        if any(kw in name_lower for kw in ['restaurant', 'café', 'bar', 'bistro']):
-            return "Restaurant"
-        elif any(kw in name_lower for kw in ['museum', 'musée', 'gallery', 'louvre', 'orsay']):
-            return "Museum"
-        elif any(kw in name_lower for kw in ['metro', 'subway', 'station', 'train', 'gare', 'rail']):
-            return "Public transport"
-        elif any(kw in name_lower for kw in ['airport', 'aéroport']):
-            return "Airport"
-        elif any(kw in name_lower for kw in ['park', 'garden', 'jardin', 'parc']):
-            return "Park"
-        elif any(kw in name_lower for kw in
-                 ['tower', 'tour', 'eiffel', 'cathedral', 'cathédrale', 'notre-dame', 'opera', 'opéra', 'arc',
-                  'pantheon']):
-            return "Monument"
-        else:
-            return "Attraction"
-
-    async def _extract_languages(self, page, html_content: str) -> List[str]:
-        languages = []
-
-        try:
-            lang_elem = await page.query_selector('[data-testid="languages-spoken"]')
-            if lang_elem:
-                text = await lang_elem.inner_text()
-                langs = re.split(r'[,•\n]', text)
-                for lang in langs:
-                    lang = lang.strip()
-                    if 2 < len(lang) < 30 and 'languages' not in lang.lower():
-                        languages.append(lang)
-        except:
-            pass
-
-        return languages
-
-    async def _extract_contact(self, html_content: str) -> tuple:
-        phone = None
-        email = None
-
-        phone_match = re.search(r'tel:\s*([+\d\s()-]{8,20})', html_content)
-        if phone_match:
-            phone = phone_match.group(1).strip()
-
-        email_match = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', html_content)
-        if email_match:
-            email = email_match.group(1).strip()
-
-        return phone, email
+        return reviews
