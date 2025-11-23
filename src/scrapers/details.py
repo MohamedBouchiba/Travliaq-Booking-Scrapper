@@ -311,6 +311,22 @@ class DetailsScraper:
             if ptype and ptype in ['Hotel', 'Apartment', 'Resort', 'BedAndBreakfast', 'Hostel']:
                 return ptype
 
+        keywords = {
+            'Apartment': ['apartment', 'flat', 'appartement'],
+            'Hotel': ['hotel', 'hôtel'],
+            'Resort': ['resort'],
+            'Hostel': ['hostel', 'auberge'],
+            'Villa': ['villa'],
+            'Guesthouse': ['guest house', 'guesthouse']
+        }
+
+        search_text = html[:10000].lower()
+
+        for category, terms in keywords.items():
+            for term in terms:
+                if term in search_text:
+                    return category
+
         try:
             badge = await page.query_selector('[data-testid="property-type-badge"]')
             if badge:
@@ -320,7 +336,7 @@ class DetailsScraper:
         except:
             pass
 
-        return None
+        return "Hotel"
 
     async def _extract_star_rating_complete(self, page: Page, html: str, json_data: List[dict]) -> Optional[int]:
         for jdata in json_data:
@@ -502,7 +518,7 @@ class DetailsScraper:
         return images[:50], main_image
 
     async def _extract_amenities_targeted(self, page: Page, html: str, json_data: List[dict]) -> Tuple[List[str], List[str]]:
-        """ÉQUIPEMENTS - Extraction ciblée précise."""
+        """ÉQUIPEMENTS - Extraction exhaustive complète."""
         amenities = set()
         popular = []
 
@@ -517,42 +533,72 @@ class DetailsScraper:
                             if 3 < len(name) < 60:
                                 amenities.add(name)
 
-        # Cibler spécifiquement la section facilities VISIBLE
+        # Section "Most popular facilities"
         try:
-            # Section "Most popular facilities"
-            popular_section = await page.query_selector('[data-testid="property-most-popular-facilities"], .hp_desc_main_content')
-
-            if popular_section:
-                items = await popular_section.query_selector_all('.bui-list__item, li, span[class*="facility"]')
-
-                for item in items[:100]:
+            popular_wrapper = await page.query_selector('[data-testid="property-most-popular-facilities-wrapper"]')
+            if popular_wrapper:
+                items = await popular_wrapper.query_selector_all('li .f6b6d2a959')
+                for item in items:
                     text = await item.inner_text()
                     text = text.strip()
-
-                    if 3 < len(text) < 60 and text[0].isupper():
-                        # Validation stricte
-                        if not any(kw in text.lower() for kw in ['skip', 'sign', 'register', 'booking', 'overview', 'price', 'select', 'genius']):
-                            amenities.add(text)
-                            if len(popular) < 15:
-                                popular.append(text)
+                    if 3 < len(text) < 60:
+                        amenities.add(text)
+                        if len(popular) < 15:
+                            popular.append(text)
         except:
             pass
 
-        # Équipements communs contextuels
-        common_facilities = [
-            'Free WiFi', 'WiFi', 'Parking', 'Free parking', 'Restaurant', 'Bar',
-            'Room service', 'Fitness center', 'Spa', 'Swimming pool', 'Pool',
-            'Air conditioning', 'Heating', 'Non-smoking rooms', 'Family rooms',
-            'Airport shuttle', '24-hour front desk', 'Elevator', 'Terrace', 'Garden',
-            'Kitchen', 'Washing machine', 'Iron', 'Safe', 'Soundproof',
-            'Hot tub', 'Sauna', 'Coffee machine', 'Mini-bar', 'Flat-screen TV',
-            'Balcony', 'Private bathroom', 'Hairdryer', 'Bathtub', 'Shower'
-        ]
+        # Toutes les sections de facilities par catégorie
+        try:
+            facility_groups = await page.query_selector_all('[data-testid="facility-group-container"]')
 
-        search_zone = html[:50000]
-        for facility in common_facilities:
-            if facility.lower() in search_zone.lower():
-                amenities.add(facility)
+            for group in facility_groups:
+                try:
+                    items = await group.query_selector_all('li .f6b6d2a959')
+                    for item in items:
+                        text = await item.inner_text()
+                        text = text.strip()
+                        if 3 < len(text) < 60:
+                            amenities.add(text)
+                except:
+                    continue
+        except:
+            pass
+
+        # Équipements dans les chambres - sélecteur .hprt-facilities-facility
+        try:
+            room_facilities = await page.query_selector_all('.hprt-facilities-facility')
+            for facility in room_facilities:
+                try:
+                    data_name = await facility.get_attribute('data-name-en')
+                    if data_name and 3 < len(data_name) < 60:
+                        amenities.add(data_name)
+                except:
+                    pass
+        except:
+            pass
+
+        # Liste .hprt-facilities-others
+        try:
+            others_list = await page.query_selector('.hprt-facilities-others')
+            if others_list:
+                items = await others_list.query_selector_all('li .hprt-facilities-facility')
+                for item in items:
+                    try:
+                        data_name = await item.get_attribute('data-name-en')
+                        if data_name and 3 < len(data_name) < 60:
+                            amenities.add(data_name)
+                        else:
+                            text_elem = await item.query_selector('.other_facility_badge--default_color')
+                            if text_elem:
+                                text = await text_elem.inner_text()
+                                text = text.strip()
+                                if 3 < len(text) < 60:
+                                    amenities.add(text)
+                    except:
+                        pass
+        except:
+            pass
 
         cleaned = sorted(list(amenities))
 
@@ -809,27 +855,50 @@ class DetailsScraper:
         """LANGUES - Extraction ciblée."""
         languages = []
 
+        # Cibler la section "Languages Spoken"
         try:
-            # Chercher section languages
-            lang_patterns = [
-                r'Languages?\s+spoken[:\s]+([A-Za-zÀ-ÿ,\s•·]+)',
-                r'Langues?\s+parlées[:\s]+([A-Za-zÀ-ÿ,\s•·]+)',
-            ]
+            lang_groups = await page.query_selector_all('[data-testid="facility-group-container"]')
 
-            for pattern in lang_patterns:
-                match = re.search(pattern, html, re.IGNORECASE)
-                if match:
-                    text = match.group(1)
-                    langs = re.split(r'[,•·\n]', text)
-
-                    for lang in langs[:15]:
-                        lang = lang.strip()
-                        if 2 < len(lang) < 30 and lang[0].isupper():
-                            if not any(kw in lang.lower() for kw in ['hotel', 'overview', 'skip', 'booking']):
-                                languages.append(lang)
-                    break
+            for group in lang_groups:
+                try:
+                    h3 = await group.query_selector('h3')
+                    if h3:
+                        h3_text = await h3.inner_text()
+                        if 'language' in h3_text.lower():
+                            items = await group.query_selector_all('li .f6b6d2a959')
+                            for item in items:
+                                lang = await item.inner_text()
+                                lang = lang.strip()
+                                if 2 < len(lang) < 30:
+                                    languages.append(lang)
+                            break
+                except:
+                    continue
         except:
             pass
+
+        # Fallback regex patterns
+        if not languages:
+            try:
+                lang_patterns = [
+                    r'Languages?\s+spoken[:\s]+([A-Za-zÀ-ÿ,\s•·]+)',
+                    r'Langues?\s+parlées[:\s]+([A-Za-zÀ-ÿ,\s•·]+)',
+                ]
+
+                for pattern in lang_patterns:
+                    match = re.search(pattern, html, re.IGNORECASE)
+                    if match:
+                        text = match.group(1)
+                        langs = re.split(r'[,•·\n]', text)
+
+                        for lang in langs[:15]:
+                            lang = lang.strip()
+                            if 2 < len(lang) < 30 and lang[0].isupper():
+                                if not any(kw in lang.lower() for kw in ['hotel', 'overview', 'skip', 'booking']):
+                                    languages.append(lang)
+                        break
+            except:
+                pass
 
         logger.info(f"🗣️  {len(languages)} langues")
 
