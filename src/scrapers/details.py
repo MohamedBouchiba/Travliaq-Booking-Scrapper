@@ -184,29 +184,6 @@ class DetailsScraper:
                     await page.wait_for_timeout(2000)
             except:
                 pass
-
-            await page.evaluate("window.scrollTo(0, 0)")
-            await page.wait_for_timeout(500)
-        except:
-            pass
-
-    def _build_hotel_url(self, request: HotelDetailsRequest) -> str:
-        base_url = f"{settings.booking_base_url}/hotel/fr/{request.hotel_id}.html"
-        params = []
-        if request.checkin:
-            params.append(f"checkin={request.checkin}")
-        if request.checkout:
-            params.append(f"checkout={request.checkout}")
-        if request.adults:
-            params.append(f"group_adults={request.adults}")
-        if request.rooms:
-            params.append(f"no_rooms={request.rooms}")
-        return f"{base_url}?{'&'.join(params)}" if params else base_url
-
-    def _extract_all_json_ld(self, html: str) -> List[dict]:
-        json_blocks = []
-        try:
-            pattern = r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>'
             matches = re.findall(pattern, html, re.DOTALL)
             for match in matches:
                 try:

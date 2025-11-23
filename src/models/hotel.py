@@ -5,6 +5,7 @@ from datetime import time
 
 class HotelDetailsRequest(BaseModel):
     hotel_id: str = Field(..., description="ID de l'hotel (depuis search results)")
+    country_code: Optional[str] = Field("fr", description="Code pays (ex: fr, gb, us)")
     checkin: Optional[str] = Field(None, description="Date checkin pour prix chambres (YYYY-MM-DD)")
     checkout: Optional[str] = Field(None, description="Date checkout pour prix chambres (YYYY-MM-DD)")
     adults: Optional[int] = Field(2, description="Nombre d'adultes pour prix chambres")
