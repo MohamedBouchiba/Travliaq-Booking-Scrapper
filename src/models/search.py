@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 from datetime import date
 from enum import Enum
@@ -70,6 +70,24 @@ class HotelSearchRequest(BaseModel):
 
     # Pagination
     max_results: int = Field(25, ge=1, le=100, description="Nombre max de resultats a scraper")
+
+    @field_validator('property_types', mode='before')
+    @classmethod
+    def parse_property_types(cls, v):
+        if v is None:
+            return v
+        # Convertir les noms d'enum (ex: "HOTEL") en valeurs (ex: "204")
+        return [PropertyType[item] if isinstance(item, str) and item in PropertyType.__members__ else item for item in v]
+
+    @field_validator('meal_plan', mode='before')
+    @classmethod
+    def parse_meal_plan(cls, v):
+        if v is None:
+            return v
+        # Convertir le nom d'enum (ex: "BREAKFAST_INCLUDED") en valeur (ex: "1")
+        if isinstance(v, str) and v in MealPlan.__members__:
+            return MealPlan[v]
+        return v
 
 
 class HotelSummary(BaseModel):
