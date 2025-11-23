@@ -1,13 +1,11 @@
-FROM python:3.11-slim
+FROM mcr.microsoft.com/playwright/python:v1.41.0-jammy
 
 WORKDIR /app
 
-# Install chrome dependencies if needed for scraping, but starting simple
-# If selenium/playwright is used, we might need a more complex base image or install deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install --with-deps chromium
 
 COPY . .
 
-CMD ["python", "search_exemples.py"]
+# Pour la production, on lance l'API plutôt que les exemples
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
