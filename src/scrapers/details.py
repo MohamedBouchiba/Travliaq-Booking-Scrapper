@@ -168,20 +168,6 @@ class DetailsScraper:
             await page.close()
 
     async def _mega_scroll(self, page: Page):
-        """Scroll complet."""
-        try:
-            for i in range(10):
-                await page.evaluate(f"window.scrollTo(0, {i * 1200})")
-                await page.wait_for_timeout(400)
-
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(2000)
-        for jdata in json_data:
-            if jdata.get('address') and isinstance(jdata['address'], dict):
-                addr = jdata['address']
-                parts = [str(addr.get(k, '')) for k in ['streetAddress', 'addressLocality', 'postalCode', 'addressCountry'] if addr.get(k)]
-                if parts:
-                    full_address = ', '.join(parts)
 
             if jdata.get('geo') and isinstance(jdata['geo'], dict):
                 lat = jdata['geo'].get('latitude')
