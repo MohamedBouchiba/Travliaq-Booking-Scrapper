@@ -112,57 +112,6 @@ class DetailsScraper:
             # HOUSE RULES - ciblage précis sur .b0400e5749
             house_rules = await self._extract_house_rules_targeted(page, html_content)
 
-            # ATTRACTIONS - ciblage précis sur [data-testid="poi-block-list"]
-            nearby_attractions = await self._extract_nearby_targeted(page, html_content)
-
-            # LANGUES - extraction ciblée
-            languages_spoken = await self._extract_languages_targeted(page, html_content)
-
-                try:
-                    rating = jdata['starRating']
-                    if isinstance(rating, dict):
-                        rating = rating.get('ratingValue')
-                    rating_int = int(float(rating))
-                    if 1 <= rating_int <= 5:
-                        return rating_int
-                except:
-                    pass
-
-        try:
-            stars = await page.query_selector_all('[aria-label*="star" i]')
-            if 1 <= len(stars) <= 5:
-                return len(stars)
-        except:
-            pass
-
-        try:
-            star_icons = await page.query_selector_all('.bui-star-rating__icon, svg[data-testid="star"]')
-            if 1 <= len(star_icons) <= 5:
-                return len(star_icons)
-        except:
-            pass
-
-        star_patterns = [
-            r'(\d)-star',
-            r'(\d)\s+stars?',
-            r'"starRating"[:\s]*"?(\d)"?',
-        ]
-
-        for pattern in star_patterns:
-            match = re.search(pattern, html, re.IGNORECASE)
-            if match:
-                try:
-                    stars = int(match.group(1))
-                    if 1 <= stars <= 5:
-                        return stars
-                except:
-                    pass
-
-        return None
-
-    async def _extract_reviews(self, page: Page, html: str, json_data: List[dict]) -> Tuple[Optional[float], Optional[int], Optional[str]]:
-        score, count, category = None, None, None
-
         for jdata in json_data:
             if jdata.get('aggregateRating'):
                 rating = jdata['aggregateRating']
