@@ -1,4 +1,15 @@
 from fastapi import APIRouter, HTTPException, Query
+from src.models.hotel import HotelDetailsRequest, HotelDetails
+from src.scrapers.details import DetailsScraper
+from typing import Optional
+
+router = APIRouter()
+
+
+@router.get("/hotel_details", response_model=HotelDetails)
+async def get_hotel_details(
+        hotel_id: str = Query(..., description="ID de l'hotel (ex: moder-flat-heart-of-iveme)"),
+        country_code: Optional[str] = Query("fr", description="Code pays (ex: fr, gb, us)"),
         checkin: Optional[str] = Query(None, description="Date checkin (YYYY-MM-DD) pour prix chambres"),
         checkout: Optional[str] = Query(None, description="Date checkout (YYYY-MM-DD)"),
         adults: Optional[int] = Query(2, description="Nombre d'adultes"),
