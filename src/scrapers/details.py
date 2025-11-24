@@ -153,54 +153,6 @@ class DetailsScraper:
                     "checkin": request.checkin,
                     "checkout": request.checkout,
                     "adults": request.adults,
-                    "rooms": request.rooms
-                }
-            )
-
-            return result, guest_reviews
-
-        except Exception as e:
-            logger.error(f"❌ Erreur: {e}")
-            import traceback
-            if jdata.get('description'):
-                desc = jdata['description']
-                if isinstance(desc, str) and len(desc) > 50:
-                    descriptions.append(desc)
-
-        try:
-            desc_container = await page.query_selector('#property_description_content, [data-testid="property-description"]')
-            if desc_container:
-                full_text = await desc_container.inner_text()
-                if full_text and len(full_text) > 50:
-                    descriptions.append(full_text.strip())
-        except:
-            pass
-
-        desc_selectors = ['.hp_desc_main_content', '[data-capla-component*="description"]']
-        for selector in desc_selectors:
-            try:
-                section = await page.query_selector(selector)
-                if section:
-                    text = await section.inner_text()
-                    if text and len(text) > 50:
-                        descriptions.append(text.strip())
-            except:
-                pass
-
-        unique_desc = []
-        seen = set()
-        for desc in descriptions:
-            normalized = desc[:100].lower()
-            if normalized not in seen:
-                seen.add(normalized)
-                unique_desc.append(desc)
-
-        return '\n\n'.join(unique_desc) if unique_desc else None
-
-    async def _extract_property_type(self, page: Page, html: str, json_data: List[dict]) -> Optional[str]:
-        for jdata in json_data:
-            ptype = jdata.get('@type')
-            if ptype and ptype in ['Hotel', 'Apartment', 'Resort', 'BedAndBreakfast', 'Hostel']:
                 return ptype
 
         keywords = {
