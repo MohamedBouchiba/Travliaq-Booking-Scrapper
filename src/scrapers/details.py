@@ -162,37 +162,6 @@ class DetailsScraper:
         except Exception as e:
             logger.error(f"❌ Erreur: {e}")
             import traceback
-            traceback.print_exc()
-            raise
-        finally:
-            await page.close()
-
-    async def _mega_scroll(self, page: Page):
-
-            if jdata.get('geo') and isinstance(jdata['geo'], dict):
-                lat = jdata['geo'].get('latitude')
-                lon = jdata['geo'].get('longitude')
-
-        if not lat:
-            for pattern in [r'"latitude":\s*([-\d.]+)', r'"lat":\s*([-\d.]+)']:
-                match = re.search(pattern, html)
-                if match:
-                    lat = float(match.group(1))
-                    break
-
-        if not lon:
-            for pattern in [r'"longitude":\s*([-\d.]+)', r'"lng":\s*([-\d.]+)']:
-                match = re.search(pattern, html)
-                if match:
-                    lon = float(match.group(1))
-                    break
-
-        return Address(full_address=full_address, latitude=lat, longitude=lon) if (full_address or lat) else None
-
-    async def _extract_description_full(self, page: Page, html: str, json_data: List[dict]) -> Optional[str]:
-        descriptions = []
-
-        for jdata in json_data:
             if jdata.get('description'):
                 desc = jdata['description']
                 if isinstance(desc, str) and len(desc) > 50:
