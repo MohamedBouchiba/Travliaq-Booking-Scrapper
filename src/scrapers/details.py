@@ -176,30 +176,6 @@ class DetailsScraper:
 
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await page.wait_for_timeout(2000)
-
-            try:
-                read_all_btn = await page.query_selector('[data-testid="fr-read-all-reviews"], button:has-text("Read all reviews")')
-                if read_all_btn:
-                    await read_all_btn.click()
-                    await page.wait_for_timeout(2000)
-            except:
-                pass
-        for sel in selectors:
-            try:
-                elem = await page.query_selector(sel)
-                if elem:
-                    text = await elem.inner_text()
-                    if text and len(text) > 3:
-                        return text.strip()
-            except:
-                pass
-
-        return "Unknown Hotel"
-
-    async def _extract_address(self, page: Page, html: str, json_data: List[dict]) -> Optional[Address]:
-        full_address = None
-        lat, lon = None, None
-
         for jdata in json_data:
             if jdata.get('address') and isinstance(jdata['address'], dict):
                 addr = jdata['address']
