@@ -184,22 +184,6 @@ class DetailsScraper:
                     await page.wait_for_timeout(2000)
             except:
                 pass
-            matches = re.findall(pattern, html, re.DOTALL)
-            for match in matches:
-                try:
-                    json_blocks.append(json.loads(match))
-                except:
-                    pass
-        except:
-            pass
-        return json_blocks
-
-    async def _extract_name(self, page: Page, json_data: List[dict]) -> str:
-        for jdata in json_data:
-            if jdata.get('name') and len(str(jdata['name'])) > 3:
-                return str(jdata['name']).strip()
-
-        selectors = ['h2[data-testid="property-name"]', 'h1[data-testid="title"]', 'h2.pp-header__title']
         for sel in selectors:
             try:
                 elem = await page.query_selector(sel)
