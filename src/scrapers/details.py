@@ -107,6 +107,385 @@ class DetailsScraper:
             rooms = await self._extract_rooms_complete(page, html_content)
             cheapest_price = min([r.price for r in rooms if r.price], default=None)
 
+            policies = await self._extract_policies(page, html_content)
+
+            # HOUSE RULES - ciblage précis sur .b0400e5749
+            house_rules = await self._extract_house_rules_targeted(page, html_content)
+
+            # ATTRACTIONS - ciblage précis sur [data-testid="poi-block-list"]
+            nearby_attractions = await self._extract_nearby_targeted(page, html_content)
+
+            # LANGUES - extraction ciblée
+            languages_spoken = await self._extract_languages_targeted(page, html_content)
+
+            phone, email = await self._extract_contact_complete(page, html_content)
+
+            guest_reviews = await self._extract_all_reviews_guaranteed(page, html_content)
+
+            logger.info(f"✅ {name} | {len(guest_reviews)} avis | {len(images)} images | {len(amenities)} équipements")
+
+            result = HotelDetails(
+                hotel_id=request.hotel_id,
+                name=name,
+                url=url,
+                address=address,
+                description=description,
+                property_type=property_type,
+                star_rating=star_rating,
+                review_score=review_score,
+                review_count=review_count,
+                review_category=review_category,
+                review_scores_detail=review_scores_detail,
+                images=images,
+                main_image=main_image,
+                amenities=amenities,
+                popular_amenities=popular_amenities,
+                rooms=rooms,
+                cheapest_price=cheapest_price,
+                policies=policies,
+                house_rules=house_rules,
+                nearby_attractions=nearby_attractions,
+                languages_spoken=languages_spoken,
+                phone=phone,
+                email=email,
+                scrape_timestamp=datetime.utcnow().isoformat(),
+                scrape_parameters={
+                    "checkin": request.checkin,
+                    "checkout": request.checkout,
+                    "adults": request.adults,
+                    "rooms": request.rooms
+                }
+            )
+
+            return result, guest_reviews
+
+        except Exception as e:
+            logger.error(f"❌ Erreur: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        finally:
+            await page.close()
+
+    async def _mega_scroll(self, page: Page):
+        """Scroll complet."""
+        try:
+            for i in range(10):
+                await page.evaluate(f"window.scrollTo(0, {i * 1200})")
+                await page.wait_for_timeout(400)
+
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(2000)
+
+            try:
+                read_all_btn = await page.query_selector('[data-testid="fr-read-all-reviews"], button:has-text("Read all reviews")')
+                if read_all_btn:
+                    await read_all_btn.click()
+                    await page.wait_for_timeout(2000)
+            except:
+                pass
+        except:
+            pass
+
+    def _build_hotel_url(self, request: HotelDetailsRequest) -> str:
+        # Si l'ID est déjà une URL complète
+        if "booking.com" in request.hotel_id and "http" in request.hotel_id:
+            base_url = request.hotel_id.split('?')[0]
+        else:
+            # Construction standard avec code pays
+            country = request.country_code if request.country_code else "fr"
+            base_url = f"{settings.booking_base_url}/hotel/{country}/{request.hotel_id}.html"
+
+        params = []
+        if request.checkin:
+            params.append(f"checkin={request.checkin}")
+        if request.checkout:
+            params.append(f"checkout={request.checkout}")
+        if request.adults:
+            params.append(f"group_adults={request.adults}")
+        if request.rooms:
+            params.append(f"no_rooms={request.rooms}")
+        return f"{base_url}?{'&'.join(params)}" if params else base_url
+
+    def _extract_all_json_ld(self, html: str) -> List[dict]:
+        json_blocks = []
+        try:
+            pattern = r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>'
+            matches = re.findall(pattern, html, re.DOTALL)
+            for match in matches:
+                try:
+                    json_blocks.append(json.loads(match))
+                except:
+                    pass
+        except:
+            pass
+        return json_blocks
+
+    async def _extract_name(self, page: Page, json_data: List[dict]) -> str:
+        for jdata in json_data:
+            if jdata.get('name') and len(str(jdata['name'])) > 3:
+                return str(jdata['name']).strip()
+
+        selectors = ['h2[data-testid="property-name"]', 'h1[data-testid="title"]', 'h2.pp-header__title']
+        for sel in selectors:
+            try:
+                elem = await page.query_selector(sel)
+                if elem:
+                    text = await elem.inner_text()
+                    if text and len(text) > 3:
+                        return text.strip()
+            except:
+                pass
+
+        return "Unknown Hotel"
+
+    async def _extract_address(self, page: Page, html: str, json_data: List[dict]) -> Optional[Address]:
+        full_address = None
+        lat, lon = None, None
+
+        for jdata in json_data:
+            if jdata.get('address') and isinstance(jdata['address'], dict):
+                addr = jdata['address']
+                parts = [str(addr.get(k, '')) for k in ['streetAddress', 'addressLocality', 'postalCode', 'addressCountry'] if addr.get(k)]
+                if parts:
+                    full_address = ', '.join(parts)
+
+            if jdata.get('geo') and isinstance(jdata['geo'], dict):
+                lat = jdata['geo'].get('latitude')
+                lon = jdata['geo'].get('longitude')
+
+        if not lat:
+            for pattern in [r'"latitude":\s*([-\d.]+)', r'"lat":\s*([-\d.]+)']:
+                match = re.search(pattern, html)
+                if match:
+                    lat = float(match.group(1))
+                    break
+
+        if not lon:
+            for pattern in [r'"longitude":\s*([-\d.]+)', r'"lng":\s*([-\d.]+)']:
+                match = re.search(pattern, html)
+                if match:
+                    lon = float(match.group(1))
+                    break
+
+        return Address(full_address=full_address, latitude=lat, longitude=lon) if (full_address or lat) else None
+
+    async def _extract_description_full(self, page: Page, html: str, json_data: List[dict]) -> Optional[str]:
+        descriptions = []
+
+        for jdata in json_data:
+            if jdata.get('description'):
+                desc = jdata['description']
+                if isinstance(desc, str) and len(desc) > 50:
+                    descriptions.append(desc)
+
+        try:
+            desc_container = await page.query_selector('#property_description_content, [data-testid="property-description"]')
+            if desc_container:
+                full_text = await desc_container.inner_text()
+                if full_text and len(full_text) > 50:
+                    descriptions.append(full_text.strip())
+        except:
+            pass
+
+        desc_selectors = ['.hp_desc_main_content', '[data-capla-component*="description"]']
+        for selector in desc_selectors:
+            try:
+                section = await page.query_selector(selector)
+                if section:
+                    text = await section.inner_text()
+                    if text and len(text) > 50:
+                        descriptions.append(text.strip())
+            except:
+                pass
+
+        unique_desc = []
+        seen = set()
+        for desc in descriptions:
+            normalized = desc[:100].lower()
+            if normalized not in seen:
+                seen.add(normalized)
+                unique_desc.append(desc)
+
+        return '\n\n'.join(unique_desc) if unique_desc else None
+
+    async def _extract_property_type(self, page: Page, html: str, json_data: List[dict]) -> Optional[str]:
+        for jdata in json_data:
+            ptype = jdata.get('@type')
+            if ptype and ptype in ['Hotel', 'Apartment', 'Resort', 'BedAndBreakfast', 'Hostel']:
+                return ptype
+
+        keywords = {
+            'Apartment': ['apartment', 'flat', 'appartement'],
+            'Hotel': ['hotel', 'hôtel'],
+            'Resort': ['resort'],
+            'Hostel': ['hostel', 'auberge'],
+            'Villa': ['villa'],
+            'Guesthouse': ['guest house', 'guesthouse']
+        }
+
+        search_text = html[:10000].lower()
+
+        for category, terms in keywords.items():
+            for term in terms:
+                if term in search_text:
+                    return category
+
+        try:
+            badge = await page.query_selector('[data-testid="property-type-badge"]')
+            if badge:
+                text = await badge.inner_text()
+                if text and len(text) < 30:
+                    return text.strip()
+        except:
+            pass
+
+        return "Hotel"
+
+    async def _extract_star_rating_complete(self, page: Page, html: str, json_data: List[dict]) -> Optional[int]:
+        for jdata in json_data:
+            if jdata.get('starRating'):
+                try:
+                    rating = jdata['starRating']
+                    if isinstance(rating, dict):
+                        rating = rating.get('ratingValue')
+                    rating_int = int(float(rating))
+                    if 1 <= rating_int <= 5:
+                        return rating_int
+                except:
+                    pass
+
+        try:
+            stars = await page.query_selector_all('[aria-label*="star" i]')
+            if 1 <= len(stars) <= 5:
+                return len(stars)
+        except:
+            pass
+
+        try:
+            star_icons = await page.query_selector_all('.bui-star-rating__icon, svg[data-testid="star"]')
+            if 1 <= len(star_icons) <= 5:
+                return len(star_icons)
+        except:
+            pass
+
+        star_patterns = [
+            r'(\d)-star',
+            r'(\d)\s+stars?',
+            r'"starRating"[:\s]*"?(\d)"?',
+        ]
+
+        for pattern in star_patterns:
+            match = re.search(pattern, html, re.IGNORECASE)
+            if match:
+                try:
+                    stars = int(match.group(1))
+                    if 1 <= stars <= 5:
+                        return stars
+                except:
+                    pass
+
+        return None
+
+    async def _extract_reviews(self, page: Page, html: str, json_data: List[dict]) -> Tuple[Optional[float], Optional[int], Optional[str]]:
+        score, count, category = None, None, None
+
+        for jdata in json_data:
+            if jdata.get('aggregateRating'):
+                rating = jdata['aggregateRating']
+                if isinstance(rating, dict):
+                    score = rating.get('ratingValue')
+                    count = rating.get('reviewCount')
+
+        if not score:
+            try:
+                score_elem = await page.query_selector('[data-testid="review-score-badge"], .b5cd09854e.d10a6220b4')
+                if score_elem:
+                    text = await score_elem.inner_text()
+                    match = re.search(r'(\d+\.?\d*)', text)
+                    if match:
+                        score = float(match.group(1))
+            except:
+                pass
+
+        if not count:
+            count_patterns = [
+                r'(\d[\d,]+)\s+(?:reviews?|avis)',
+                r'"reviewCount":\s*(\d+)',
+            ]
+            for pattern in count_patterns:
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    count = int(match.group(1).replace(',', ''))
+                    break
+
+        if score:
+            categories = ['Exceptional', 'Wonderful', 'Excellent', 'Very good', 'Fabulous', 'Superb', 'Good']
+            for cat in categories:
+                if re.search(rf'{re.escape(str(score))}[^a-zA-Z]*{cat}', html, re.IGNORECASE):
+                    category = cat
+                    break
+
+        return score, count, category
+
+    async def _extract_detailed_scores_guaranteed(self, page: Page, html: str) -> Optional[ReviewScores]:
+        scores = {}
+
+        categories = {
+            'staff': ['Staff', 'Personnel'],
+            'facilities': ['Facilities', 'Équipements', 'Equipements'],
+            'cleanliness': ['Cleanliness', 'Propreté', 'Proprete'],
+            'comfort': ['Comfort', 'Confort'],
+            'value_for_money': ['Value for money', 'Rapport qualité', 'Value'],
+            'location': ['Location', 'Emplacement'],
+            'wifi': ['WiFi', 'Wi-Fi', 'Free WiFi', 'Free Wifi']
+        }
+
+        try:
+            subscore_items = await page.query_selector_all('[data-testid="review-subscore"]')
+
+            for item in subscore_items:
+                text = await item.inner_text()
+
+                for field, labels in categories.items():
+                    if field in scores:
+                        continue
+
+                    for label in labels:
+                        if label in text:
+                            score_match = re.search(r'\b(\d+\.?\d*)\b', text)
+                            if score_match:
+                                value = float(score_match.group(1))
+                                if 0 <= value <= 10:
+                                    scores[field] = value
+                                    break
+        except:
+            pass
+
+        for field, labels in categories.items():
+            if field in scores:
+                continue
+
+            for label in labels:
+                pattern = rf'{re.escape(label)}[^\d]*?(\d+\.?\d*)'
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    try:
+                        value = float(match.group(1))
+                        if 0 <= value <= 10:
+                            scores[field] = value
+                            break
+                    except:
+                        pass
+
+        logger.info(f"📊 Scores détaillés: {len(scores)} catégories")
+
+        return ReviewScores(**scores) if scores else None
+
+    async def _extract_images_decoded(self, page: Page, html: str, json_data: List[dict]) -> Tuple[List[str], Optional[str]]:
+        images_set = set()
+        main_image = None
+
         img_pattern = r'(https://cf\.bstatic\.com/xdata/images/hotel/[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)\?[^\s"\'<>]+)'
 
         all_urls = re.findall(img_pattern, html)
