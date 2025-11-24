@@ -136,23 +136,6 @@ class DetailsScraper:
                 review_count=review_count,
                 review_category=review_category,
                 review_scores_detail=review_scores_detail,
-                images=images,
-                main_image=main_image,
-                amenities=amenities,
-                popular_amenities=popular_amenities,
-                rooms=rooms,
-                cheapest_price=cheapest_price,
-                policies=policies,
-            'Resort': ['resort'],
-            'Hostel': ['hostel', 'auberge'],
-            'Villa': ['villa'],
-            'Guesthouse': ['guest house', 'guesthouse']
-        }
-
-        search_text = html[:10000].lower()
-
-        for category, terms in keywords.items():
-            for term in terms:
                 if term in search_text:
                     return category
 
