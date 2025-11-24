@@ -143,21 +143,6 @@ class DetailsScraper:
                 rooms=rooms,
                 cheapest_price=cheapest_price,
                 policies=policies,
-                house_rules=house_rules,
-                nearby_attractions=nearby_attractions,
-                languages_spoken=languages_spoken,
-                phone=phone,
-                email=email,
-                scrape_timestamp=datetime.utcnow().isoformat(),
-                scrape_parameters={
-                    "checkin": request.checkin,
-                    "checkout": request.checkout,
-                    "adults": request.adults,
-                return ptype
-
-        keywords = {
-            'Apartment': ['apartment', 'flat', 'appartement'],
-            'Hotel': ['hotel', 'hôtel'],
             'Resort': ['resort'],
             'Hostel': ['hostel', 'auberge'],
             'Villa': ['villa'],
