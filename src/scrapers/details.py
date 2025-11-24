@@ -118,41 +118,6 @@ class DetailsScraper:
             # LANGUES - extraction ciblée
             languages_spoken = await self._extract_languages_targeted(page, html_content)
 
-            phone, email = await self._extract_contact_complete(page, html_content)
-
-            guest_reviews = await self._extract_all_reviews_guaranteed(page, html_content)
-
-            logger.info(f"✅ {name} | {len(guest_reviews)} avis | {len(images)} images | {len(amenities)} équipements")
-
-            result = HotelDetails(
-                hotel_id=request.hotel_id,
-                name=name,
-                url=url,
-                address=address,
-                description=description,
-                property_type=property_type,
-                star_rating=star_rating,
-                review_score=review_score,
-                review_count=review_count,
-                review_category=review_category,
-                review_scores_detail=review_scores_detail,
-                if term in search_text:
-                    return category
-
-        try:
-            badge = await page.query_selector('[data-testid="property-type-badge"]')
-            if badge:
-                text = await badge.inner_text()
-                if text and len(text) < 30:
-                    return text.strip()
-        except:
-            pass
-
-        return "Hotel"
-
-    async def _extract_star_rating_complete(self, page: Page, html: str, json_data: List[dict]) -> Optional[int]:
-        for jdata in json_data:
-            if jdata.get('starRating'):
                 try:
                     rating = jdata['starRating']
                     if isinstance(rating, dict):
