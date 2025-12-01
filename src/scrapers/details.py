@@ -186,19 +186,6 @@ class DetailsScraper:
                 pass
         except:
             pass
-
-    def _build_hotel_url(self, request: HotelDetailsRequest) -> str:
-        # Si l'ID est déjà une URL complète
-        if "booking.com" in request.hotel_id and "http" in request.hotel_id:
-            base_url = request.hotel_id.split('?')[0]
-        else:
-            # Construction standard avec code pays
-            country = request.country_code if request.country_code else "fr"
-            base_url = f"{settings.booking_base_url}/hotel/{country}/{request.hotel_id}.html"
-
-        params = []
-        if request.checkin:
-            params.append(f"checkin={request.checkin}")
         if request.checkout:
             params.append(f"checkout={request.checkout}")
         if request.adults:
