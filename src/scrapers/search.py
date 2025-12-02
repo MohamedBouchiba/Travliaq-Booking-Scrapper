@@ -16,6 +16,20 @@ class SearchScraper(BaseScraper):
         Recherche les hotels disponibles selon les criteres.
         """
         page = await self.new_page()
+
+        try:
+            # Construction de l'URL de recherche Booking avec tous les filtres
+            url = self._build_search_url(request)
+            await self.safe_goto(page, url)
+
+            # Attendre que les resultats se chargent
+            await page.wait_for_selector('[data-testid="property-card"]', timeout=90000)
+
+            # Extraction des hotels
+            hotels = await self._extract_hotels(page, request.max_results)
+
+            return HotelSearchResult(
+                request=request,
                 hotels=hotels,
                 total_found=len(hotels),
                 scrape_timestamp=datetime.utcnow().isoformat()
