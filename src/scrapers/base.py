@@ -23,6 +23,10 @@ class BaseScraper:
             user_agent=settings.user_agent,
             viewport={'width': 1920, 'height': 1080}
         )
+        
+        # Bloquer images/CSS/fonts pour accelerer le chargement sur Railway
+        await self.context.route("**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2}", lambda route: route.abort())
+        
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
