@@ -69,6 +69,26 @@ class DetailsScraper:
         if self.playwright:
             await self.playwright.stop()
 
+    def _build_hotel_url(self, request: HotelDetailsRequest) -> str:
+        """Construit l'URL de la page détail de l'hôtel sur Booking.com."""
+        base_url = f"{settings.booking_base_url}/hotel/{request.country_code}/{request.hotel_id}.html"
+
+        # Ajouter les paramètres de dates et adultes si fournis
+        params = []
+        if request.checkin:
+            params.append(f"checkin={request.checkin}")
+        if request.checkout:
+            params.append(f"checkout={request.checkout}")
+        if request.adults:
+            params.append(f"group_adults={request.adults}")
+        if request.rooms:
+            params.append(f"no_rooms={request.rooms}")
+
+        if params:
+            base_url += "?" + "&".join(params)
+
+        return base_url
+
     async def get_hotel_details(self, request: HotelDetailsRequest) -> Tuple[HotelDetails, List[GuestReview]]:
         """Extraction complète avec sélecteurs précis."""
         page = await self.context.new_page()
