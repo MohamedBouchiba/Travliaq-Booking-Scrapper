@@ -188,7 +188,7 @@ class DetailsScraper:
             await page.close()
 
     async def _mega_scroll(self, page: Page):
-        """Scroll complet."""
+        """Scroll complet pour charger tout le contenu lazy-loaded."""
         try:
             for i in range(10):
                 await page.evaluate(f"window.scrollTo(0, {i * 1200})")
@@ -206,13 +206,6 @@ class DetailsScraper:
                 pass
         except:
             pass
-        if request.checkout:
-            params.append(f"checkout={request.checkout}")
-        if request.adults:
-            params.append(f"group_adults={request.adults}")
-        if request.rooms:
-            params.append(f"no_rooms={request.rooms}")
-        return f"{base_url}?{'&'.join(params)}" if params else base_url
 
     def _extract_all_json_ld(self, html: str) -> List[dict]:
         json_blocks = []
